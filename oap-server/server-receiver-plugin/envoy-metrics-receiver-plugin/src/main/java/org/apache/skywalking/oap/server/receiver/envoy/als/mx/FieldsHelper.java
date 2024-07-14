@@ -72,7 +72,7 @@ public enum FieldsHelper {
 
     @SuppressWarnings("unchecked")
     public void init(final InputStream inputStream,
-                     final Class<? extends ServiceMetaInfo> serviceInfoClass) throws ModuleStartException {
+        final Class<? extends ServiceMetaInfo> serviceInfoClass) throws ModuleStartException {
         if (initialized) {
             return;
         }
@@ -87,62 +87,72 @@ public enum FieldsHelper {
             final String serviceMetaInfoFieldName = entry.getKey();
             final String flatBuffersFieldName = entry.getValue();
 
-            final Pattern p = Pattern.compile("(\\$\\{(?<properties>.+?)})");
-            final Matcher m = p.matcher(flatBuffersFieldName);
-            final List<Property> flatBuffersFieldNames = new ArrayList<>(m.groupCount());
-            final StringBuffer serviceNamePattern = new StringBuffer();
-            while (m.find()) {
-                final String properties = m.group("properties");
-                final List<Field> fields = Splitter.on(',').omitEmptyStrings().splitToList(properties).stream().map(candidate -> {
-                    List<String> tokens = Splitter.on('.').omitEmptyStrings().splitToList(candidate);
-
-                    StringBuilder tokenBuffer = new StringBuilder();
-                    List<String> candidateFields = new ArrayList<>(tokens.size());
-                    for (String token : tokens) {
-                        if (tokenBuffer.length() == 0 && token.startsWith("\"")) {
-                            tokenBuffer.append(token);
-                        } else if (tokenBuffer.length() > 0) {
-                            tokenBuffer.append(".").append(token);
-                            if (token.endsWith("\"")) {
-                                candidateFields.add(tokenBuffer.toString().replaceAll("\"", ""));
-                                tokenBuffer.setLength(0);
-                            }
-                        } else {
-                            candidateFields.add(token);
-                        }
-                    }
-                    return new Field(candidateFields);
-                }).collect(Collectors.toList());
-                flatBuffersFieldNames.add(new Property(fields));
-                m.appendReplacement(serviceNamePattern, "%s");
-            }
-
             fieldNameMapping.put(
                 serviceMetaInfoFieldName,
-                new ServiceNameFormat(serviceNamePattern.toString(), flatBuffersFieldNames)
+                createServiceNameFormat(flatBuffersFieldName)
             );
 
-            try {
-                final String setter = "set" + StringUtils.capitalize(serviceMetaInfoFieldName);
-                final MethodHandles.Lookup lookup = MethodHandles.lookup();
-                final Class<?> parameterType = String.class;
-                final CallSite site = LambdaMetafactory.metafactory(
-                        lookup, "accept",
-                        MethodType.methodType(BiConsumer.class),
-                        MethodType.methodType(void.class, Object.class, Object.class),
-                        lookup.findVirtual(serviceInfoClass, setter,
-                                           MethodType.methodType(void.class, parameterType)),
-                        MethodType.methodType(void.class, serviceInfoClass, parameterType));
-                final MethodHandle factory = site.getTarget();
-                final BiConsumer<? super ServiceMetaInfo, String> method =
-                        (BiConsumer<? super ServiceMetaInfo, String>) factory.invoke();
-                fieldSetterMapping.put(serviceMetaInfoFieldName, method);
-            } catch (final Throwable e) {
-                throw new ModuleStartException("Initialize method error", e);
-            }
+            createAndSetFieldSetter(serviceInfoClass, serviceMetaInfoFieldName, setter);
         }
         initialized = true;
     }
+    
+    private ServiceNameFormat createServiceNameFormat(String flatBuffersFieldName){
+        final Pattern p = Pattern.compile("(\\$\\{(?<properties>.+?)})");
+        final Matcher m = p.matcher(flatBuffersFieldName);
+        final List<Property> flatBuffersFieldNames = new ArrayList<>(m.groupCount());
+        final StringBuffer serviceNamePattern = new StringBuffer();
+        while (m.find()) {
+            final String properties = m.group("properties");
+            final List<Field> fields = Splitter.on(',').omitEmptyStrings().splitToList(properties).stream().map(candidate -> {
+                List<String> tokens = Splitter.on('.').omitEmptyStrings().splitToList(candidate);
+
+                StringBuilder tokenBuffer = new StringBuilder();
+                List<String> candidateFields = new ArrayList<>(tokens.size());
+                for (String token : tokens) {
+                    if (tokenBuffer.length() == 0 && token.startsWith("\"")) {
+                        tokenBuffer.append(token);
+                    } else if (tokenBuffer.length() > 0) {
+                        tokenBuffer.append(".").append(token);
+                        if (token.endsWith("\"")) {
+                            candidateFields.add(tokenBuffer.toString().replaceAll("\"", ""));
+                            tokenBuffer.setLength(0);
+                        }
+                    } else {
+                        candidateFields.add(token);
+                    }
+                }
+                return new Field(candidateFields);
+            }).collect(Collectors.toList());
+            flatBuffersFieldNames.add(new Property(fields));
+            m.appendReplacement(serviceNamePattern, "%s");
+        }
+
+        return new ServiceNameFormat(serviceNamePattern.toString(), flatBuffersFieldNames);
+    }
+
+    private void createAndSetFieldSetter(Class<? extends ServiceMetaInfo> serviceInfoClass, String serviceMetaInfoFieldName, String setter) throws ModuleStartException {
+        try {
+            final String setter = "set" + StringUtils.capitalize(serviceMetaInfoFieldName);
+            final MethodHandles.Lookup lookup = MethodHandles.lookup();
+            final Class<?> parameterType = String.class;
+            final CallSite site = LambdaMetafactory.metafactory(
+                lookup, "accept",
+                MethodType.methodType(BiConsumer.class),
+                MethodType.methodType(void.class, Object.class, Object.class),
+                lookup.findVirtual(serviceInfoClass, setter,
+                    MethodType.methodType(void.class, parameterType)),
+                MethodType.methodType(void.class, serviceInfoClass, parameterType));
+            final MethodHandle factory = site.getTarget();
+            final BiConsumer<? super ServiceMetaInfo, String> method =
+                (BiConsumer<? super ServiceMetaInfo, String>) factory.invoke();
+            fieldSetterMapping.put(serviceMetaInfoFieldName, method);
+        } catch (final Throwable e) {
+            throw new ModuleStartException("Initialize method error", e);
+        }
+    }
+
+//Refactoring end
 
     /**
      * Inflates the {@code serviceMetaInfo} with the given {@link Struct struct}.
