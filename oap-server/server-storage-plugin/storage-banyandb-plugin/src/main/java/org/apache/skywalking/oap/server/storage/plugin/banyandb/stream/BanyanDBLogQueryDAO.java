@@ -69,30 +69,16 @@ public class BanyanDBLogQueryDAO extends AbstractBanyanDBDAO implements ILogQuer
 
     @Override
     public Logs queryLogs(String serviceId, String serviceInstanceId, String endpointId,
-                         TraceScopeCondition relatedTrace, Order queryOrder, int from, int limit,
-                         Duration duration, List<Tag> tags, List<String> keywordsOfContent,
-                         List<String> excludingKeywordsOfContent) throws IOException {
+                          TraceScopeCondition relatedTrace, Order queryOrder, int from, int limit,
+                          Duration duration, List<Tag> tags, List<String> keywordsOfContent,
+                          List<String> excludingKeywordsOfContent) throws IOException {
         long startTB = 0;
         long endTB = 0;
         if (nonNull(duration)) {
             startTB = duration.getStartTimeBucketInSec();
             endTB = duration.getEndTimeBucketInSec();
         }
-
-        final QueryBuilder<StreamQuery> query = buildQuery(serviceId, serviceInstanceId, endpointId, relatedTrace, tags);
-        TimestampRange tsRange = buildTsRange(startTB, endTB);
-        StreamQueryResponse resp = query(LogRecord.INDEX_NAME, TAGS, tsRange, query);
-
-        Logs logs = new Logs();
-        for (final RowEntity rowEntity : resp.getElements()) {
-            logs.getLogs().add(buildLog(rowEntity));
-        }
-        return logs;
-    }
-
-    private QueryBuilder<StreamQuery> buildQuery(String serviceId, String serviceInstanceId, String endpointId,
-                                                TraceScopeCondition relatedTrace, List<Tag> tags) {
-        return new QueryBuilder<StreamQuery>() {
+        final QueryBuilder<StreamQuery> query = new QueryBuilder<StreamQuery>() {
             @Override
             public void apply(StreamQuery query) {
                 if (StringUtil.isNotEmpty(serviceId)) {
@@ -106,66 +92,58 @@ public class BanyanDBLogQueryDAO extends AbstractBanyanDBDAO implements ILogQuer
                     query.and(eq(AbstractLogRecord.ENDPOINT_ID, endpointId));
                 }
                 if (Objects.nonNull(relatedTrace)) {
-                    applyRelatedTraceConditions(query, relatedTrace);
+                    if (StringUtil.isNotEmpty(relatedTrace.getTraceId())) {
+                        query.and(eq(AbstractLogRecord.TRACE_ID, relatedTrace.getTraceId()));
+                    }
+                    if (StringUtil.isNotEmpty(relatedTrace.getSegmentId())) {
+                        query.and(eq(AbstractLogRecord.TRACE_SEGMENT_ID, relatedTrace.getSegmentId()));
+                    }
+                    if (Objects.nonNull(relatedTrace.getSpanId())) {
+                        query.and(eq(AbstractLogRecord.SPAN_ID, (long) relatedTrace.getSpanId()));
+                    }
                 }
 
                 if (CollectionUtils.isNotEmpty(tags)) {
-                    applyTagConditions(query, tags);
+                    List<String> tagsConditions = new ArrayList<>(tags.size());
+                    for (final Tag tag : tags) {
+                        tagsConditions.add(tag.toString());
+                    }
+                    query.and(having(LogRecord.TAGS, tagsConditions));
                 }
             }
         };
-    }
 
-    private void applyRelatedTraceConditions(StreamQuery query, TraceScopeCondition relatedTrace) {
-        if (StringUtil.isNotEmpty(relatedTrace.getTraceId())) {
-            query.and(eq(AbstractLogRecord.TRACE_ID, relatedTrace.getTraceId()));
-        }
-        if (StringUtil.isNotEmpty(relatedTrace.getSegmentId())) {
-            query.and(eq(AbstractLogRecord.TRACE_SEGMENT_ID, relatedTrace.getSegmentId()));
-        }
-        if (Objects.nonNull(relatedTrace.getSpanId())) {
-            query.and(eq(AbstractLogRecord.SPAN_ID, (long) relatedTrace.getSpanId()));
-        }
-    }
-
-    private void applyTagConditions(StreamQuery query, List<Tag> tags) {
-        List<String> tagsConditions = new ArrayList<>(tags.size());
-        for (final Tag tag : tags) {
-            tagsConditions.add(tag.toString());
-        }
-        query.and(having(LogRecord.TAGS, tagsConditions));
-    }
-
-    private TimestampRange buildTsRange(long startTB, long endTB) {
         TimestampRange tsRange = null;
         if (startTB > 0 && endTB > 0) {
             tsRange = new TimestampRange(TimeBucket.getTimestamp(startTB), TimeBucket.getTimestamp(endTB));
         }
-        return tsRange;
-    }
 
-    private Log buildLog(RowEntity rowEntity) {
-        Log log = new Log();
-        log.setServiceId(rowEntity.getTagValue(AbstractLogRecord.SERVICE_ID));
-        log.setServiceInstanceId(
-                rowEntity.getTagValue(AbstractLogRecord.SERVICE_INSTANCE_ID));
-        log.setEndpointId(
-                rowEntity.getTagValue(AbstractLogRecord.ENDPOINT_ID));
-        if (log.getEndpointId() != null) {
-            log.setEndpointName(
-                    IDManager.EndpointID.analysisId(log.getEndpointId()).getEndpointName());
+        StreamQueryResponse resp = query(LogRecord.INDEX_NAME, TAGS, tsRange, query);
+
+        Logs logs = new Logs();
+
+        for (final RowEntity rowEntity : resp.getElements()) {
+            Log log = new Log();
+            log.setServiceId(rowEntity.getTagValue(AbstractLogRecord.SERVICE_ID));
+            log.setServiceInstanceId(
+                    rowEntity.getTagValue(AbstractLogRecord.SERVICE_INSTANCE_ID));
+            log.setEndpointId(
+                    rowEntity.getTagValue(AbstractLogRecord.ENDPOINT_ID));
+            if (log.getEndpointId() != null) {
+                log.setEndpointName(
+                        IDManager.EndpointID.analysisId(log.getEndpointId()).getEndpointName());
+            }
+            log.setTraceId(rowEntity.getTagValue(AbstractLogRecord.TRACE_ID));
+            log.setTimestamp(((Number) rowEntity.getTagValue(AbstractLogRecord.TIMESTAMP)).longValue());
+            log.setContentType(ContentType.instanceOf(
+                    ((Number) rowEntity.getTagValue(AbstractLogRecord.CONTENT_TYPE)).intValue()));
+            log.setContent(rowEntity.getTagValue(AbstractLogRecord.CONTENT));
+            byte[] dataBinary = rowEntity.getTagValue(AbstractLogRecord.TAGS_RAW_DATA);
+            if (dataBinary != null && dataBinary.length > 0) {
+                parserDataBinary(dataBinary, log.getTags());
+            }
+            logs.getLogs().add(log);
         }
-        log.setTraceId(rowEntity.getTagValue(AbstractLogRecord.TRACE_ID));
-        log.setTimestamp(((Number) rowEntity.getTagValue(AbstractLogRecord.TIMESTAMP)).longValue());
-        log.setContentType(ContentType.instanceOf(
-                ((Number) rowEntity.getTagValue(AbstractLogRecord.CONTENT_TYPE)).intValue()));
-        log.setContent(rowEntity.getTagValue(AbstractLogRecord.CONTENT));
-        byte[] dataBinary = rowEntity.getTagValue(AbstractLogRecord.TAGS_RAW_DATA);
-        if (dataBinary != null && dataBinary.length > 0) {
-            parserDataBinary(dataBinary, log.getTags());
-        }
-        return log;
-    }
-//Refactoring end
+        return logs;
     }
 }
